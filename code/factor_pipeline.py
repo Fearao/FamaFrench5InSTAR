@@ -11,7 +11,9 @@ from pathlib import Path
 import pandas as pd
 
 DATA_PROCESSED_DIR = Path(__file__).parent.parent / "data" / "processed"
-OUTPUT_PATH = DATA_PROCESSED_DIR / "weekly_panel.parquet"
+WEEKLY_PANEL_PATH = DATA_PROCESSED_DIR / "weekly_panel.parquet"
+WEEKLY_FUNDAMENTALS_PATH = DATA_PROCESSED_DIR / "weekly_fundamentals.parquet"
+FUNDAMENTAL_LAG_DAYS = 30
 
 
 def _load_market_prices() -> pd.DataFrame:
@@ -124,14 +126,121 @@ def build_weekly_panel() -> pd.DataFrame:
     weekly = weekly.merge(rf, on="trade_date", how="left")
     weekly["excess_return"] = weekly["weekly_return"] - weekly["rf_weekly"]
 
-    OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    weekly.sort_values(["trade_date", "stock_id"]).to_parquet(OUTPUT_PATH, index=False)
+    WEEKLY_PANEL_PATH.parent.mkdir(parents=True, exist_ok=True)
+    weekly.sort_values(["trade_date", "stock_id"]).to_parquet(WEEKLY_PANEL_PATH, index=False)
     print(
-        f"Saved {OUTPUT_PATH} with {len(weekly):,} rows across "
+        f"Saved {WEEKLY_PANEL_PATH} with {len(weekly):,} rows across "
         f"{weekly['stock_id'].nunique()} stocks from {start_date.date()} to {end_date.date()}"
     )
     return weekly
 
 
+def _prepare_bm_data() -> pd.DataFrame:
+    df = pd.read_parquet(DATA_PROCESSED_DIR / "bm_factor.parquet")
+    df["stock_id"] = df["Stkcd"].astype(str).str.zfill(6)
+    df["accper"] = pd.to_datetime(df["Accper"], errors="coerce")
+    df = df[df["accper"].notna()].copy()
+    df["available_date"] = df["accper"] + pd.to_timedelta(FUNDAMENTAL_LAG_DAYS, unit="D")
+    df["book_equity"] = pd.to_numeric(df["A003000000"], errors="coerce")
+    return df[["stock_id", "available_date", "book_equity"]]
+
+
+def _prepare_profitability_data() -> pd.DataFrame:
+    df = pd.read_parquet(DATA_PROCESSED_DIR / "profitability_factor.parquet")
+    df["stock_id"] = df["Stkcd"].astype(str).str.zfill(6)
+    df["accper"] = pd.to_datetime(df["Accper"], errors="coerce")
+    df = df[df["accper"].notna()].copy()
+    df["available_date"] = df["accper"] + pd.to_timedelta(FUNDAMENTAL_LAG_DAYS, unit="D")
+    df["profit_metric"] = pd.to_numeric(df["B130101"], errors="coerce")
+    return df[["stock_id", "available_date", "profit_metric"]]
+
+
+def _prepare_investment_data() -> pd.DataFrame:
+    df = pd.read_parquet(DATA_PROCESSED_DIR / "investment_factor.parquet")
+    df["stock_id"] = df["Stkcd"].astype(str).str.zfill(6)
+    df["accper"] = pd.to_datetime(df["Accper"], errors="coerce")
+    df = df[df["accper"].notna()].copy()
+    df["available_date"] = df["accper"] + pd.to_timedelta(FUNDAMENTAL_LAG_DAYS, unit="D")
+    df["invest_F080601A"] = pd.to_numeric(df["F080601A"], errors="coerce")
+    df["invest_F080602A"] = pd.to_numeric(df["F080602A"], errors="coerce")
+    df["invest_F080603A"] = pd.to_numeric(df["F080603A"], errors="coerce")
+    return df[
+        [
+            "stock_id",
+            "available_date",
+            "invest_F080601A",
+            "invest_F080602A",
+            "invest_F080603A",
+        ]
+    ]
+
+
+def _merge_lagged(base: pd.DataFrame, lagged: pd.DataFrame, suffix: str) -> pd.DataFrame:
+    value_cols = [c for c in lagged.columns if c not in {"stock_id", "available_date"}]
+    lagged_groups = {
+        sid: grp.drop(columns="stock_id").sort_values("available_date")
+        for sid, grp in lagged.groupby("stock_id", sort=False)
+    }
+
+    outputs = []
+    for sid, chunk in base.groupby("stock_id", group_keys=False):
+        chunk = chunk.sort_values("trade_date")
+        right = lagged_groups.get(sid)
+        if right is None or right.empty:
+            filler = {col: pd.NA for col in value_cols}
+            filler[f"{suffix}_available_date"] = pd.NaT
+            outputs.append(chunk.assign(**filler))
+            continue
+
+        merged = pd.merge_asof(
+            chunk,
+            right,
+            left_on="trade_date",
+            right_on="available_date",
+            direction="backward",
+        )
+        merged = merged.rename(columns={"available_date": f"{suffix}_available_date"})
+        outputs.append(merged)
+
+    return pd.concat(outputs, ignore_index=True)
+
+
+def build_weekly_fundamentals() -> pd.DataFrame:
+    if not WEEKLY_PANEL_PATH.exists():
+        raise FileNotFoundError(
+            "weekly_panel.parquet not found. Run build_weekly_panel() first."
+        )
+
+    base = pd.read_parquet(WEEKLY_PANEL_PATH, columns=["stock_id", "trade_date"])
+    bm = _prepare_bm_data()
+    profit = _prepare_profitability_data()
+    investment = _prepare_investment_data()
+
+    enriched = _merge_lagged(base, bm, "book")
+    enriched = _merge_lagged(enriched, profit, "profit")
+    enriched = _merge_lagged(enriched, investment, "investment")
+
+    value_cols = [
+        "book_equity",
+        "profit_metric",
+        "invest_F080601A",
+        "invest_F080602A",
+        "invest_F080603A",
+    ]
+    enriched[value_cols] = (
+        enriched.groupby("stock_id", group_keys=False)[value_cols].ffill()
+    )
+
+    enriched.sort_values(["trade_date", "stock_id"]).to_parquet(
+        WEEKLY_FUNDAMENTALS_PATH, index=False
+    )
+    print(
+        f"Saved {WEEKLY_FUNDAMENTALS_PATH} with columns: "
+        f"{', '.join(value_cols)}"
+    )
+    return enriched
+
+
 if __name__ == "__main__":
     build_weekly_panel()
+    build_weekly_fundamentals()
