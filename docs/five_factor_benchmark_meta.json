@@ -1,0 +1,9 @@
+{
+  "label": "five_factor_benchmark",
+  "n_obs": 301,
+  "r_squared": 0.9561743423346281,
+  "alpha": -0.0006366309533491451,
+  "alpha_t": -1.2330238234074797,
+  "mom_coef": NaN,
+  "mom_t": NaN
+}

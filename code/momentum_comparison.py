@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 import numpy as np
 import pandas as pd
@@ -110,16 +110,22 @@ def _load_portfolio_returns() -> pd.DataFrame:
     return portfolio
 
 
-def run_regression(momentum: pd.DataFrame, momentum_col: str, label: str) -> dict:
+def run_regression(
+    momentum: Optional[pd.DataFrame], momentum_col: Optional[str], label: str
+) -> dict:
     factors = pd.read_parquet(FIVE_FACTOR_PATH)
-    merged_factors = factors.merge(momentum, on="trade_date", how="inner")
+    merged_factors = factors.copy()
+
+    cols = ["MKT_RF", "SMB", "HML", "RMW", "CMA"]
+    if momentum is not None and momentum_col:
+        merged_factors = merged_factors.merge(momentum, on="trade_date", how="inner")
+        cols.append(momentum_col)
 
     portfolio = _load_portfolio_returns()
     frame = portfolio.merge(merged_factors, on="trade_date", how="inner").sort_values("trade_date")
     frame["excess_portfolio"] = frame["portfolio_return"] - frame["RF"]
-    frame = frame.dropna(subset=[momentum_col])
-
-    cols = ["MKT_RF", "SMB", "HML", "RMW", "CMA", momentum_col]
+    if momentum_col:
+        frame = frame.dropna(subset=[momentum_col])
     X = sm.add_constant(frame[cols])
     model = sm.OLS(frame["excess_portfolio"], X).fit(cov_type="HAC", cov_kwds={"maxlags": 4})
 
@@ -156,6 +162,12 @@ def main() -> None:
     momentum_tables = []
     regression_meta = []
 
+    # Baseline five-factor benchmark (no momentum)
+    benchmark_meta = run_regression(None, None, "five_factor_benchmark")
+    benchmark_meta["window"] = "-"
+    benchmark_meta["skip"] = "-"
+    regression_meta.append(benchmark_meta)
+
     for cfg in MOMENTUM_CONFIGS:
         factor = build_momentum_factor(panel, cfg)
         meta = run_regression(factor, cfg.label, cfg.label)
@@ -178,11 +190,20 @@ def main() -> None:
 
     # Document summary
     summary_path = DOCS_DIR / "momentum_comparison.md"
-    lines = ["# Momentum Window Comparison", "", "| Config | Window | Skip | R² | α | MOM Coef | MOM t |", "| --- | --- | --- | --- | --- | --- | --- |"]
+    lines = [
+        "# Momentum Window Comparison",
+        "",
+        "| Config | Window | Skip | R² | α | MOM Coef | MOM t |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
+    ]
     for meta in regression_meta:
+        mom_coef = meta["mom_coef"]
+        mom_t = meta["mom_t"]
+        mom_coef_str = f"{mom_coef:.4f}" if np.isfinite(mom_coef) else "-"
+        mom_t_str = f"{mom_t:.2f}" if np.isfinite(mom_t) else "-"
         lines.append(
             f"| {meta['label']} | {meta['window']} | {meta['skip']} | "
-            f"{meta['r_squared']:.3f} | {meta['alpha']:.4e} | {meta['mom_coef']:.4f} | {meta['mom_t']:.2f} |"
+            f"{meta['r_squared']:.3f} | {meta['alpha']:.4e} | {mom_coef_str} | {mom_t_str} |"
         )
     summary_path.write_text("\n".join(lines), encoding="utf-8")
     print(f"Wrote summary to {summary_path}")
