@@ -14,17 +14,17 @@
 | --- | --- |
 | `data/processed/weekly_panel.parquet` | 590 只股票 × 129,767 周度观测，含 `weekly_return`、`market_cap`、`rf_weekly`、`excess_return` 等。 |
 | `data/processed/weekly_fundamentals.parquet` | 为每个交易周附上滞后 30 天的账面权益、盈利、投资指标，可直接用于分组。 |
-| `data/processed/factor_returns_f5.parquet` | 2019-08-09 ~ 2025-12-05 的周度五因子序列。 |
-| `data/processed/factor_returns_mom.parquet` | 同期的 12-2 动量因子（基于 log-return 窗口 48 周、跳过最近 4 周）。 |
+| `data/processed/factor_returns_f5.parquet` | 2019-08-09 ~ 2025-12-05 的周度五因子序列（每期 5 分位分组，取 top-bottom 组合差）。 |
+| `data/processed/factor_returns_mom.parquet` | 同期的 12-2 动量因子（log-return 窗口 48 周、跳过最近 4 周，同样以 5 分位 High-Low 构造）。 |
 | `docs/regression_results.md` | 汇总五因子与扩展模型的系数、显著性与结论。 |
 
 ## 回归亮点
-- 五因子模型：R²=0.995，α≈-6.3e-05（不显著），`MKT` 与 `SMB` 主导解释力；`RMW/CMA` 在 10% 显著性附近。
-- 五因子+动量：R²=0.996，α 依旧不显著；`MOM` 系数为 -0.012（|t|≈1.47）未通过 10% 阈值，但盈利因子 t 值升至 2.07，说明动量吸收了部分变异。
-- 动量因子的极值范围约 -0.173 ~ 0.140，构建逻辑基于 rolling log-return，适合作为简单基准。
+- 五因子模型：R²≈0.956，α≈-6.4e-04（不显著），`MKT` 仍接近 1；`SMB`、`HML` 在 5σ 以上显著，说明 5 分位 top-bottom 构建后放大了规模与价值暴露。
+- 五因子+动量：R²≈0.956，与五因子几乎一致；`MOM` 系数 ~0.0016（t≈0.23）仍不显著。
+- 动量因子范围扩大到约 -0.34 ~ 0.42，反映 5 分位极端组合的波动更大。
 
 ## 后续建议
-1. **优化分组权重**：目前所有风格分组使用市值加权 + 三分位；可改为 2×3/2×3×3 分组以更贴近原版 Fama-French。
+1. **探索其它分组方式**：现已切换至 5 分位 top-bottom，可对照 2×3 或 2×3×3 网格，比较不同构造对解释力的影响。
 2. **引入行业/状态切片**：在行业或规模子样本内重复计算因子与回归，验证稳健性。
 3. **扩展组合对象**：当前示例仅为等权组合，可按策略或单只股票构建 `portfolio_return` 并复用 `run_regression` 接口。
 4. **丰富诊断**：可保存残差序列、Q-Q 图或信息比率，便于写入正式研究报告。
