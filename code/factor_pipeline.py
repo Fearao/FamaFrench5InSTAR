@@ -15,6 +15,7 @@ DATA_PROCESSED_DIR = Path(__file__).parent.parent / "data" / "processed"
 WEEKLY_PANEL_PATH = DATA_PROCESSED_DIR / "weekly_panel.parquet"
 WEEKLY_FUNDAMENTALS_PATH = DATA_PROCESSED_DIR / "weekly_fundamentals.parquet"
 FIVE_FACTOR_PATH = DATA_PROCESSED_DIR / "factor_returns_f5.parquet"
+MOM_FACTOR_PATH = DATA_PROCESSED_DIR / "factor_returns_mom.parquet"
 FUNDAMENTAL_LAG_DAYS = 30
 
 
@@ -272,6 +273,14 @@ def _tertile_flags(series: pd.Series, lower: float = 0.3, upper: float = 0.7) ->
     return series.apply(_label)
 
 
+def _factor_spread(df: pd.DataFrame, bucket_col: str, high_label: str, low_label: str) -> float:
+    high = df[df[bucket_col] == high_label]
+    low = df[df[bucket_col] == low_label]
+    return _value_weighted_return(high, "weekly_return", "market_cap") - _value_weighted_return(
+        low, "weekly_return", "market_cap"
+    )
+
+
 def build_five_factors() -> pd.DataFrame:
     for required_path in [WEEKLY_PANEL_PATH, WEEKLY_FUNDAMENTALS_PATH]:
         if not required_path.exists():
@@ -304,21 +313,16 @@ def build_five_factors() -> pd.DataFrame:
         mkt = _value_weighted_return(working, "weekly_return", "market_cap")
         mkt_excess = mkt - rf_weekly if not np.isnan(mkt) else np.nan
 
-        def _factor_diff(df: pd.DataFrame, bucket_col: str, high_label: str, low_label: str) -> float:
-            high = df[df[bucket_col] == high_label]
-            low = df[df[bucket_col] == low_label]
-            return _value_weighted_return(high, "weekly_return", "market_cap") - _value_weighted_return(
-                low, "weekly_return", "market_cap"
-            )
-
         smb = _value_weighted_return(
             working[working["size_bucket"] == "S"], "weekly_return", "market_cap"
         ) - _value_weighted_return(
             working[working["size_bucket"] == "B"], "weekly_return", "market_cap"
         )
-        hml = _factor_diff(working, "bm_bucket", "H", "L")
-        rmw = _factor_diff(working, "profit_bucket", "H", "L")
-        cma = _factor_diff(working, "invest_bucket", "L", "H")  # Conservative (low invest) minus Aggressive
+        hml = _factor_spread(working, "bm_bucket", "H", "L")
+        rmw = _factor_spread(working, "profit_bucket", "H", "L")
+        cma = _factor_spread(
+            working, "invest_bucket", "L", "H"
+        )  # Conservative (low invest) minus Aggressive
 
         factor_rows.append(
             {
@@ -341,7 +345,47 @@ def build_five_factors() -> pd.DataFrame:
     return factors
 
 
+def build_momentum_factor() -> pd.DataFrame:
+    if not WEEKLY_PANEL_PATH.exists():
+        raise FileNotFoundError("weekly_panel.parquet not found")
+
+    panel = pd.read_parquet(WEEKLY_PANEL_PATH)
+    panel = panel.dropna(subset=["weekly_return", "market_cap"])
+    panel = panel.sort_values(["stock_id", "trade_date"])
+    panel["log_ret"] = np.log1p(panel["weekly_return"].clip(lower=-0.95))
+
+    grouped = panel.groupby("stock_id", group_keys=False)
+    rolling = (
+        grouped["log_ret"]
+        .rolling(window=48, min_periods=36)
+        .sum()
+        .shift(4)
+        .reset_index(level=0, drop=True)
+    )
+    panel["momentum_signal"] = np.expm1(rolling)
+    panel = panel.dropna(subset=["momentum_signal"])
+
+    factor_rows = []
+    for trade_date, group in panel.groupby("trade_date", sort=True):
+        working = group[group["market_cap"] > 0].copy()
+        if working.empty:
+            continue
+        working["mom_bucket"] = _tertile_flags(working["momentum_signal"])
+        mom_value = _factor_spread(working, "mom_bucket", "H", "L")
+        factor_rows.append({"trade_date": trade_date, "MOM": mom_value})
+
+    momentum = pd.DataFrame(factor_rows).sort_values("trade_date")
+    momentum.to_parquet(MOM_FACTOR_PATH, index=False)
+    if not momentum.empty:
+        print(
+            f"Saved {MOM_FACTOR_PATH} ({len(momentum)} rows) with MOM range "
+            f"{momentum['MOM'].min():.4f} ~ {momentum['MOM'].max():.4f}"
+        )
+    return momentum
+
+
 if __name__ == "__main__":
     build_weekly_panel()
     build_weekly_fundamentals()
     build_five_factors()
+    build_momentum_factor()
