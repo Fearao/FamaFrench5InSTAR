@@ -9,6 +9,8 @@ import statsmodels.api as sm
 
 DATA_DIR = Path(__file__).parent.parent / "data" / "processed"
 DOCS_DIR = Path(__file__).parent.parent / "docs"
+FIVE_FACTOR_PATH = DATA_DIR / "factor_returns_f5.parquet"
+MOM_FACTOR_PATH = DATA_DIR / "factor_returns_mom.parquet"
 
 
 def _load_portfolio_returns() -> pd.DataFrame:
@@ -24,20 +26,25 @@ def _load_portfolio_returns() -> pd.DataFrame:
     return portfolio
 
 
-def _load_factor_data() -> pd.DataFrame:
-    return pd.read_parquet(DATA_DIR / "factor_returns_f5.parquet")
+def _load_factor_data(include_momentum: bool = False) -> pd.DataFrame:
+    factors = pd.read_parquet(FIVE_FACTOR_PATH)
+    if include_momentum:
+        momentum = pd.read_parquet(MOM_FACTOR_PATH)
+        factors = factors.merge(momentum, on="trade_date", how="inner")
+    return factors
 
 
-def _prepare_regression_frame() -> pd.DataFrame:
+def _prepare_regression_frame(factor_cols: list[str]) -> pd.DataFrame:
     portfolio = _load_portfolio_returns()
-    factors = _load_factor_data()
+    factors = _load_factor_data(include_momentum="MOM" in factor_cols)
     merged = portfolio.merge(factors, on="trade_date", how="inner").sort_values("trade_date")
     merged["excess_portfolio"] = merged["portfolio_return"] - merged["RF"]
+    merged = merged.dropna(subset=factor_cols + ["RF"])
     return merged
 
 
 def run_regression(label: str, factor_cols: list[str]) -> dict:
-    frame = _prepare_regression_frame()
+    frame = _prepare_regression_frame(factor_cols)
     X = sm.add_constant(frame[factor_cols])
     model = sm.OLS(frame["excess_portfolio"], X).fit(cov_type="HAC", cov_kwds={"maxlags": 4})
 
@@ -72,3 +79,7 @@ def run_regression(label: str, factor_cols: list[str]) -> dict:
 
 if __name__ == "__main__":
     run_regression("regression_f5", ["MKT_RF", "SMB", "HML", "RMW", "CMA"])
+    run_regression(
+        "regression_f5_mom",
+        ["MKT_RF", "SMB", "HML", "RMW", "CMA", "MOM"],
+    )
