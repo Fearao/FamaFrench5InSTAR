@@ -254,23 +254,22 @@ def _value_weighted_return(df: pd.DataFrame, ret_col: str, weight_col: str) -> f
     return float((df[ret_col] * weights).sum() / total)
 
 
-def _tertile_flags(series: pd.Series, lower: float = 0.3, upper: float = 0.7) -> pd.Series:
+def _quantile_flags(series: pd.Series, q: int = 5) -> pd.Series:
     clean = series.dropna()
     if clean.empty:
-        return pd.Series(index=series.index, dtype="object")
-    low_cut = clean.quantile(lower)
-    high_cut = clean.quantile(upper)
+        return pd.Series("", index=series.index, dtype="object")
 
-    def _label(val: float) -> str:
-        if pd.isna(val):
-            return ""
-        if val <= low_cut:
-            return "L"
-        if val >= high_cut:
-            return "H"
-        return "M"
+    denom = max(len(clean) - 1, 1)
+    ranks = clean.rank(method="first") - 1
+    scaled = (ranks / denom) * (q - 1)
+    bucket_index = np.floor(scaled).astype(int) + 1
+    bucket_index = bucket_index.clip(1, q)
+    labels = [f"Q{i}" for i in range(1, q + 1)]
+    mapped = bucket_index.map(lambda idx: labels[idx - 1])
 
-    return series.apply(_label)
+    full = pd.Series("", index=series.index, dtype="object")
+    full.loc[clean.index] = mapped.astype(str)
+    return full
 
 
 def _factor_spread(df: pd.DataFrame, bucket_col: str, high_label: str, low_label: str) -> float:
@@ -303,26 +302,21 @@ def build_five_factors() -> pd.DataFrame:
         working["invest_metric"] = working["invest_F080601A"]
         working = working.replace([np.inf, -np.inf], np.nan)
 
-        size_cut = working["market_cap"].median()
-        working["size_bucket"] = np.where(working["market_cap"] <= size_cut, "S", "B")
-        working["bm_bucket"] = _tertile_flags(working["bm_ratio"])
-        working["profit_bucket"] = _tertile_flags(working["profit_ratio"])
-        working["invest_bucket"] = _tertile_flags(working["invest_metric"])
+        working["size_bucket"] = _quantile_flags(working["market_cap"], q=5)
+        working["bm_bucket"] = _quantile_flags(working["bm_ratio"], q=5)
+        working["profit_bucket"] = _quantile_flags(working["profit_ratio"], q=5)
+        working["invest_bucket"] = _quantile_flags(working["invest_metric"], q=5)
 
         rf_weekly = working["rf_weekly"].iloc[0]
         mkt = _value_weighted_return(working, "weekly_return", "market_cap")
         mkt_excess = mkt - rf_weekly if not np.isnan(mkt) else np.nan
 
-        smb = _value_weighted_return(
-            working[working["size_bucket"] == "S"], "weekly_return", "market_cap"
-        ) - _value_weighted_return(
-            working[working["size_bucket"] == "B"], "weekly_return", "market_cap"
-        )
-        hml = _factor_spread(working, "bm_bucket", "H", "L")
-        rmw = _factor_spread(working, "profit_bucket", "H", "L")
+        smb = _factor_spread(working, "size_bucket", "Q1", "Q5")
+        hml = _factor_spread(working, "bm_bucket", "Q5", "Q1")
+        rmw = _factor_spread(working, "profit_bucket", "Q5", "Q1")
         cma = _factor_spread(
-            working, "invest_bucket", "L", "H"
-        )  # Conservative (low invest) minus Aggressive
+            working, "invest_bucket", "Q1", "Q5"
+        )  # Conservative (低投资 Q1) - Aggressive (高投资 Q5)
 
         factor_rows.append(
             {
@@ -370,8 +364,8 @@ def build_momentum_factor() -> pd.DataFrame:
         working = group[group["market_cap"] > 0].copy()
         if working.empty:
             continue
-        working["mom_bucket"] = _tertile_flags(working["momentum_signal"])
-        mom_value = _factor_spread(working, "mom_bucket", "H", "L")
+        working["mom_bucket"] = _quantile_flags(working["momentum_signal"], q=5)
+        mom_value = _factor_spread(working, "mom_bucket", "Q5", "Q1")
         factor_rows.append({"trade_date": trade_date, "MOM": mom_value})
 
     momentum = pd.DataFrame(factor_rows).sort_values("trade_date")
