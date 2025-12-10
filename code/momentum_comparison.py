@@ -21,9 +21,13 @@ class MomentumConfig:
     label: str
     window: int
     skip: int
+    min_periods: int | None = None
 
 
 MOMENTUM_CONFIGS: List[MomentumConfig] = [
+    MomentumConfig(label="mom_w4_s1", window=4, skip=1, min_periods=3),
+    MomentumConfig(label="mom_w8_s1", window=8, skip=1, min_periods=5),
+    MomentumConfig(label="mom_w16_s2", window=16, skip=2, min_periods=8),
     MomentumConfig(label="mom_w26_s4", window=26, skip=4),
     MomentumConfig(label="mom_w52_s4", window=52, skip=4),
     MomentumConfig(label="mom_w78_s4", window=78, skip=4),
@@ -64,9 +68,10 @@ def build_momentum_factor(panel: pd.DataFrame, cfg: MomentumConfig) -> pd.DataFr
     df = panel.copy()
     df["log_ret"] = np.log1p(df["weekly_return"].clip(lower=-0.95))
     grouped = df.groupby("stock_id", group_keys=False)
+    min_periods = cfg.min_periods or max(4, int(cfg.window * 0.8))
     rolling = (
         grouped["log_ret"]
-        .rolling(window=cfg.window, min_periods=max(4, int(cfg.window * 0.8)))
+        .rolling(window=cfg.window, min_periods=min_periods)
         .sum()
         .shift(cfg.skip)
         .reset_index(level=0, drop=True)
