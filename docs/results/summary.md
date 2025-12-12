@@ -8,6 +8,14 @@
 3. **动量扩展**：`code/momentum_comparison.py` 计算 4/8/16/26/52/78 周（均跳过近 1~4 周）的 12-2 动量，并对六个动量因子做等权平均得到 `MOM_EQ`；随后对每个动量版本＋等权组合、以及五因子 benchmark 运行 HAC(4) 回归，结果输出至 `docs/mom_w*_s*.csv/.json`、`docs/MOM_EQ_coeffs.csv`、`docs/five_factor_benchmark_coeffs.csv` 等。
 4. **诊断检验**：`code/factor_diagnostics.py` 生成因子相关矩阵和 ADF 平稳性检验（`docs/factor_correlations.csv`、`docs/factor_stationarity.csv`），并在 `docs/results/` 下绘制对应图像。
 
+## 数据覆盖与缺失情况
+- **行情数据**（2019-07-26 ~ 2025-12-08，13 万行）：仅 8 条记录出现 OHLCV 缺失，缺失率 <0.005%，不会影响截面分位；保存在 `data/processed/market_prices.parquet`。
+- **规模因子**（2019-08-02 ~ 2025-12-12，12.9 万行）：`Wretwd` 在 2019 年初期少量缺失（590 行，0.45%），构建周度收益前会直接剔除。
+- **账面/盈利因子**（2017-12-31 ~ 2025-09-30）：当前版本无缺失列，滞后 30 天后才与周度面板 merge，确保不泄漏未来信息。
+- **投资因子**（2018-12-31 ~ 2025-09-30）：`F080601A/F080602A/F080603A` 缺失 3 列共 12,211 个单元格（7.36%），主要集中在 `Source=1`（母公司/单体口径）记录；若研究只需合并报表，可在构建前过滤 `Source=0` 以提升数据完整性。
+- **无风险利率**（2022-09-15 ~ 2025-05-20）：早于首条观测的周度会在 `_build_weekly_rf_series()` 中通过 `merge_asof(..., direction="backward") + bfill()` 自动填入最早可得的 3 个月利率（目前为 1.25% 年化 ≈ 0.00024 周度），保证 2019 年起的回归都有 `RF`；若后续获得 2019-2021 的真实利率，只需补写 `risk_free_rate.parquet` 即可替换该常数。
+- 以上统计来自 `data/reports/missing_value_analysis_report.md` 与 `data/reports/missing_value_analysis_report.txt`，建议在更新原始数据后先运行 `python code/C_data_analysis.py` 刷新缺失概览。
+
 ## 样本与回归设定
 - **时间**：2019-08-09 至 2025-12-05，共 299 个周度观测（剔除动量窗口不足的个别起始周后）。
 - **被解释变量**：所有可交易股票的等权周度收益减无风险利率 `RF`，反映“市场平均策略”的表现。
