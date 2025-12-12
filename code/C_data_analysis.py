@@ -9,6 +9,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
 import seaborn as sns
+from matplotlib.patches import Patch
 from pathlib import Path
 import logging
 
@@ -67,6 +68,27 @@ class MissingValueAnalyzer:
         self.data_dir = Path(data_dir)
         self.figures_dir = Path(figures_dir)
         self.datasets = {}
+        self.missing_details = {}
+
+    @staticmethod
+    def _severity_color(pct):
+        if pct == 0:
+            return "#4CAF50"  # green
+        if pct < 1:
+            return "#FFC107"  # amber
+        if pct < 5:
+            return "#FF9800"  # orange
+        return "#F44336"  # red
+
+    @staticmethod
+    def _severity_label(pct):
+        if pct == 0:
+            return "✅ 完整"
+        if pct < 1:
+            return "⚠️ 少量缺失"
+        if pct < 5:
+            return "⚠️ 中等缺失"
+        return "❌ 严重缺失"
 
     def load_all_data(self):
         """加载所有parquet文件"""
@@ -103,6 +125,12 @@ class MissingValueAnalyzer:
             total_cells = df.shape[0] * df.shape[1]
             missing_cells = df.isnull().sum().sum()
             missing_pct = (missing_cells / total_cells) * 100 if total_cells > 0 else 0
+            col_missing = df.isnull().sum()
+            missing_col_count = int((col_missing > 0).sum())
+            col_missing_pct = (col_missing / len(df)) * 100 if len(df) > 0 else col_missing
+            self.missing_details[name] = (
+                col_missing_pct[col_missing_pct > 0].sort_values(ascending=False)
+            )
 
             logger.info(f"\n【{name}】")
             logger.info(f"  总单元格数: {total_cells:,}")
@@ -110,7 +138,6 @@ class MissingValueAnalyzer:
             logger.info(f"  缺失率: {missing_pct:.2f}%")
 
             # 统计每列的缺失值
-            col_missing = df.isnull().sum()
             if col_missing.sum() > 0:
                 logger.info(f"  列缺失详情:")
                 for col, count in col_missing[col_missing > 0].items():
@@ -123,10 +150,77 @@ class MissingValueAnalyzer:
                 'dataset': name,
                 'total_cells': total_cells,
                 'missing_cells': missing_cells,
-                'missing_pct': missing_pct
+                'missing_pct': missing_pct,
+                'missing_columns': missing_col_count,
+                'severity': self._severity_label(missing_pct)
             })
 
         return missing_stats
+
+    def plot_dataset_summary(self, missing_stats):
+        """按数据集汇总缺失率与缺失列数量，生成单图。"""
+        if not missing_stats:
+            logger.warning("无缺失统计数据，跳过汇总图绘制")
+            return
+
+        df_stats = pd.DataFrame(missing_stats)
+        df_stats = df_stats.sort_values('missing_pct', ascending=True)
+        fig_height = max(4, 0.6 * len(df_stats) + 1.5)
+        fig, ax_counts = plt.subplots(figsize=(12, fig_height))
+
+        y_pos = np.arange(len(df_stats))
+        bar_colors = [self._severity_color(pct) for pct in df_stats['missing_pct']]
+        bars = ax_counts.barh(
+            y_pos,
+            df_stats['missing_cells'] / 1_000.0,
+            color=bar_colors,
+            edgecolor='black',
+            alpha=0.85
+        )
+        ax_counts.set_yticks(y_pos)
+        ax_counts.set_yticklabels(df_stats['dataset'], fontsize=12)
+        ax_counts.set_xlabel('缺失单元格（千）', fontsize=12, fontweight='bold')
+        ax_counts.set_title('按数据集汇总的缺失情况', fontsize=15, fontweight='bold', pad=18)
+        ax_counts.grid(axis='x', alpha=0.3, linestyle='--')
+
+        for bar, missing_cells, pct in zip(bars, df_stats['missing_cells'], df_stats['missing_pct']):
+            ax_counts.text(
+                bar.get_width() + 0.2,
+                bar.get_y() + bar.get_height() / 2,
+                f"{missing_cells:,} ({pct:.2f}%)",
+                va='center',
+                fontsize=11,
+                fontweight='bold'
+            )
+
+        ax_pct = ax_counts.twiny()
+        ax_pct.plot(
+            df_stats['missing_pct'],
+            y_pos,
+            marker='o',
+            color='black',
+            linewidth=0,
+            markersize=8,
+            label='缺失率 (%)'
+        )
+        ax_pct.set_xlabel('缺失率 (%)', fontsize=12, fontweight='bold')
+        ax_pct.set_xlim(left=0)
+
+        severity_handles = [
+            Patch(facecolor=self._severity_color(pct), edgecolor='black', label=label)
+            for pct, label in [(0, '完整'), (0.5, '少量缺失'), (2, '中等缺失'), (6, '严重缺失')]
+        ]
+        ax_counts.legend(
+            handles=severity_handles,
+            title='缺失程度',
+            loc='lower right'
+        )
+
+        plt.tight_layout()
+        output_path = self.figures_dir / "00_missing_summary.png"
+        plt.savefig(output_path, dpi=300, bbox_inches='tight')
+        logger.info(f"  已保存: {output_path}")
+        plt.close(fig)
 
     def plot_missing_overview(self, missing_stats):
         """绘制缺失值总览图"""
@@ -358,21 +452,14 @@ class MissingValueAnalyzer:
         report.append("-" * 80)
         
         df_stats = pd.DataFrame(missing_stats).sort_values('missing_pct', ascending=False)
-        
+
         for _, row in df_stats.iterrows():
             report.append(f"\n{row['dataset']}:")
             report.append(f"  总单元格: {row['total_cells']:,}")
             report.append(f"  缺失单元格: {row['missing_cells']:,}")
             report.append(f"  缺失率: {row['missing_pct']:.2f}%")
-            
-            if row['missing_cells'] == 0:
-                report.append(f"  状态: ✅ 完整")
-            elif row['missing_pct'] < 1:
-                report.append(f"  状态: ⚠️  少量缺失")
-            elif row['missing_pct'] < 5:
-                report.append(f"  状态: ⚠️  中等缺失")
-            else:
-                report.append(f"  状态: ❌ 严重缺失")
+            report.append(f"  缺失列: {row.get('missing_columns', 0)}")
+            report.append(f"  状态: {row.get('severity', self._severity_label(row['missing_pct']))}")
 
         # 3. 列级缺失详情
         report.append("\n\n三、列级缺失详情")
@@ -432,6 +519,7 @@ def main():
     missing_stats = analyzer.analyze_missing_values()
     
     # 生成可视化
+    analyzer.plot_dataset_summary(missing_stats)
     analyzer.plot_missing_overview(missing_stats)
     analyzer.plot_missing_by_column()
     analyzer.plot_missing_heatmap()
