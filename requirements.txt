@@ -1,0 +1,19 @@
+# 数据处理核心库
+pandas==2.2.2
+numpy==1.26.4
+pyarrow==18.0.0
+
+# 统计分析与回归
+statsmodels==0.14.2
+scipy==1.13.0
+linearmodels>=6.0
+
+# 可视化
+matplotlib==3.8.4
+seaborn==0.13.2
+
+# 文件读写
+openpyxl>=3.1
+
+# 测试框架
+pytest>=8.0
