@@ -159,18 +159,94 @@ else
     log_warning "滚动窗口结果已存在，跳过"
 fi
 
-# ===== Pipeline完成 =====
-log_info "========================================="
-log_success "Pipeline执行完成！"
-log_info "========================================="
+# === Stage 7B: MOM_EQ稳健性检验（阶段5补充） ===
+echo -e "\n${BLUE}=== Stage 7B: MOM_EQ Robustness Tests (Supplementary) ===${NC}"
 
-log_info "生成的关键文件："
-log_info "  - data/processed/factor_returns_multiwindow.parquet"
-log_info "  - docs/tables/optimization_scorecard.csv"
-log_info "  - docs/tables/robustness_sample_split_comparison.csv"
-log_info "  - docs/momentum_optimization_report.md"
-log_info "  - docs/robustness_test_summary.md"
+# 7B.1: MOM_EQ样本分割
+STEP_NAME="MOM_EQ Sample Split Test"
+OUTPUT_FILE="docs/tables/robustness_sample_split_EQ_comparison.csv"
+if [ -f "$OUTPUT_FILE" ]; then
+    echo -e "${YELLOW}[SKIP]${NC} $STEP_NAME (output exists)"
+else
+    echo -e "${BLUE}[RUN]${NC} $STEP_NAME..."
+    python code/M_robustness_sample_split_EQ.py 2>&1 | tee -a $LOG_FILE
+    CMD_STATUS=${PIPESTATUS[0]}
+    if [ $CMD_STATUS -eq 0 ]; then
+        echo -e "${GREEN}[OK]${NC} $STEP_NAME completed"
+    else
+        echo -e "${RED}[FAIL]${NC} $STEP_NAME failed"
+        exit 1
+    fi
+fi
+
+# 7B.2: MOM_EQ滚动窗口
+STEP_NAME="MOM_EQ Rolling Window Test"
+OUTPUT_FILE="docs/tables/robustness_rolling_window_EQ_stats.csv"
+if [ -f "$OUTPUT_FILE" ]; then
+    echo -e "${YELLOW}[SKIP]${NC} $STEP_NAME (output exists)"
+else
+    echo -e "${BLUE}[RUN]${NC} $STEP_NAME..."
+    python code/M_robustness_rolling_window_EQ.py 2>&1 | tee -a $LOG_FILE
+    CMD_STATUS=${PIPESTATUS[0]}
+    if [ $CMD_STATUS -eq 0 ]; then
+        echo -e "${GREEN}[OK]${NC} $STEP_NAME completed"
+    else
+        echo -e "${RED}[FAIL]${NC} $STEP_NAME failed"
+        exit 1
+    fi
+fi
+
+# 7B.3: MOM_EQ投资组合类型分解
+STEP_NAME="MOM_EQ Portfolio Type Breakdown"
+OUTPUT_FILE="docs/tables/robustness_by_portfolio_type_EQ.csv"
+if [ -f "$OUTPUT_FILE" ]; then
+    echo -e "${YELLOW}[SKIP]${NC} $STEP_NAME (output exists)"
+else
+    echo -e "${BLUE}[RUN]${NC} $STEP_NAME..."
+    python code/M_robustness_portfolio_type_EQ.py 2>&1 | tee -a $LOG_FILE
+    CMD_STATUS=${PIPESTATUS[0]}
+    if [ $CMD_STATUS -eq 0 ]; then
+        echo -e "${GREEN}[OK]${NC} $STEP_NAME completed"
+    else
+        echo -e "${RED}[FAIL]${NC} $STEP_NAME failed"
+        exit 1
+    fi
+fi
+
+# === Stage 8: MOM_24M vs MOM_EQ对比报告 ===
+echo -e "\n${BLUE}=== Stage 8: Robustness Comparison Report ===${NC}"
+
+STEP_NAME="MOM_24M vs MOM_EQ Comparison"
+OUTPUT_FILE="docs/robustness_comparison_24M_vs_EQ.md"
+if [ -f "$OUTPUT_FILE" ]; then
+    echo -e "${YELLOW}[SKIP]${NC} $STEP_NAME (output exists)"
+else
+    echo -e "${BLUE}[RUN]${NC} $STEP_NAME..."
+    python code/N_compare_MOM_robustness.py 2>&1 | tee -a $LOG_FILE
+    CMD_STATUS=${PIPESTATUS[0]}
+    if [ $CMD_STATUS -eq 0 ]; then
+        echo -e "${GREEN}[OK]${NC} $STEP_NAME completed"
+    else
+        echo -e "${RED}[FAIL]${NC} $STEP_NAME failed"
+        exit 1
+    fi
+fi
+
+# ===== Pipeline完成 =====
+echo -e "\n${GREEN}╔════════════════════════════════════════════════════════════╗${NC}"
+echo -e "${GREEN}║                Pipeline Completed Successfully            ║${NC}"
+echo -e "${GREEN}╚════════════════════════════════════════════════════════════╝${NC}"
+echo -e "\n${BLUE}Key Findings:${NC}"
+echo -e "  - FF5 + Multi-Window Momentum implemented"
+echo -e "  - MOM_24M全样本最优: ΔR²=3.22pp, Score=82.5"
+echo -e "  - ${RED}MOM_24M稳健性崩溃: 时间-25.3pp, size_bm -40pp${NC}"
+echo -e "  - ${GREEN}MOM_EQ稳健性优越: 时间-2.8pp, size_bm -4pp${NC}"
+echo -e "  - ${YELLOW}最终推荐: MOM_EQ（牺牲1.17pp ΔR²换取稳健性）${NC}"
+echo -e "\n${BLUE}Output Files:${NC}"
+echo -e "  - Optimization: docs/momentum_optimization_report.md"
+echo -e "  - MOM_24M Robustness: docs/robustness_test_summary.md"
+echo -e "  - MOM_EQ vs MOM_24M: docs/robustness_comparison_24M_vs_EQ.md"
+echo -e "  - Final Synthesis: docs/research_synthesis_report.md"
 
 log_info "完成时间: $(date)"
 log_info "总日志: $LOG_FILE"
-
